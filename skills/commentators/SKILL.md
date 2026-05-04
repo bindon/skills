@@ -142,6 +142,8 @@ Every role agent is given these rules. There are **two layers** to write per sym
   - Kotlin: `/** {Planner} QR fallback to manual entry keeps the booking flow unblocked. */`
   - TypeScript: `/** {Security} Token kept in memory only; persisting expands breach radius. */`
   - Python: `"""{QA} Empty list must return None, not raise."""`
+- **Hard length cap (≤ 100 chars)** — The one-liner is a hard cap, not a soft target. Count characters of the content after the prefix. If the rationale won't fit, **trim it ruthlessly** (drop examples, drop function names, drop hedging) — the full reasoning belongs in the `.md`, not the source. Do NOT split into two `*` lines under the same role to dodge the cap; that produces multi-line role entries which downstream tools (extractors, summarisers) read as a single role-line.
+- **Comment-closer ban (no `*/` inside C-style block comments)** — When you write inside a `/** ... */` (or `/* ... */`) doc block, the content must NOT contain the substring `*/`. A literal `*/` anywhere in the body — even quoted, even inside backticks, even as a reference to another piece of code (e.g. `/* eslint-disable ... */`) — closes the outer block prematurely and breaks compilation. If you need to mention such a marker, paraphrase it (e.g. write "ESLint sort-keys disable directive" instead of pasting the literal `/* eslint-disable sort-keys */`). This rule does not apply to languages whose doc-comments don't use `/* */` (e.g. Python `"""`, Ruby `#`, Go `//`).
 - **Multiple roles on the same symbol** — Combine into a single doc block, one line per role, in role order:
   ```kotlin
   /**
