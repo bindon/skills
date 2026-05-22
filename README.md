@@ -35,7 +35,7 @@ Spawns a 4-role team (planner / developer / security / qa) that analyzes source 
 
 1. Creates a team `{project-name}-commentators` (or reuses an existing one).
 2. Spawns 4 role agents: `planner`, `developer`, `security`, `qa`.
-3. Reads the project's `CLAUDE.md` to pick up any role-prefix convention (falls back to English defaults `{Planner}/{Developer}/{Security}/{QA}` if none).
+3. Reads the project's `AGENTS.md` first to pick up any role-prefix convention, then falls back to `CLAUDE.md` if it exists (falls back to English defaults `{Planner}/{Developer}/{Security}/{QA}` if none).
 4. Walks the target files and processes them **one at a time**: planner → developer → security → qa, each adding a language-appropriate doc comment from their perspective.
 5. Idempotent: skips symbols that already have that role's prefix.
 6. No auto-commit — review `git diff` and commit yourself.
