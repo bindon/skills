@@ -1,6 +1,17 @@
 ---
 name: commentators
-description: Runs a 4-role annotation workflow (planner / developer / security / qa), using Claude team agents or Codex worker agents when available, to write one-line role-prefixed doc comments in source plus detailed per-role write-ups in a mirrored `docs/commentators/` tree. Use when the user wants code annotated from multiple viewpoints — planning intent, development rationale, security concerns, and QA test points — across a project. Trigger phrases include "commentators", "annotate from multiple perspectives", "multi-role comments", "역할별 주석", "팀으로 주석 달기", "4관점 리뷰 주석".
+description: Runs commentators workflow for planner/developer/security/qa annotations plus docs/commentators reviews in Claude or Codex.
+version: 0.1.0
+tags:
+  - code-review
+  - annotations
+  - multi-agent
+  - documentation
+  - security
+  - qa
+agents:
+  - claude
+  - codex
 ---
 
 # commentators
