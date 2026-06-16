@@ -1,7 +1,7 @@
 ---
 name: commentators
-description: Runs commentators workflow for planner/developer/security/qa annotations plus docs/commentators reviews in Claude or Codex.
-version: 0.1.0
+description: Runs commentators workflow producing planner/developer/security/qa commentary as a docs/commentators tree in Claude or Codex. Source files are never modified.
+version: 0.2.0
 tags:
   - code-review
   - annotations
@@ -16,10 +16,12 @@ agents:
 
 # commentators
 
-A team-based skill that analyzes code from four perspectives (planning / development / security / QA) and produces two layers of annotation:
+A team-based skill that analyzes code from four perspectives (planning / development / security / QA) and writes their commentary as a **separate documentation track** — never as inline source comments.
 
-- **In source** — one short line per role (KDoc, Javadoc, JSDoc, docstrings, etc.), each prefixed with a role tag. Easy to skim while reading code.
-- **In `docs/commentators/`** — a mirrored markdown tree under the project's `docs/` directory, with the full multi-paragraph analysis per symbol per role. This is what future agent sessions read when they need the deeper rationale.
+Think of it as a director's commentary: four commentators narrate the code on their own track, leaving the source itself untouched.
+
+- **In `docs/commentators/`** — a mirrored markdown tree under the project's `docs/` directory, with the full multi-paragraph analysis per symbol per role. This is the single source of commentary, and it is what future agent sessions read when they need the deeper rationale.
+- **Source files are read-only.** The skill reads source to decide what is worth commenting on, but never edits, creates, or annotates source files. Developers read the code directly; agents read the matching doc.
 
 ## Invocation
 
@@ -33,13 +35,13 @@ A team-based skill that analyzes code from four perspectives (planning / develop
 
 ## Core Principles
 
-1. **Two-layer output** — Every annotation produces both an in-source one-liner (≤ 100 chars) and a detailed section in a mirrored markdown file under `docs/commentators/`. The source stays skimmable; the rationale stays discoverable.
-2. **Idempotent** — If a symbol already has a one-liner with a given role's prefix (e.g. `{Planner}`) in the source, that role skips both layers for that symbol.
-3. **Sequential per file** — Within one file, exactly one role edits at a time, in order: planner → developer → security → qa. This prevents edit conflicts on both the source and the detail doc.
-4. **No auto-commit** — The skill only edits files. The user reviews the diff and commits manually.
-5. **Project conventions win** — If the project's root `AGENTS.md` defines a role-prefix convention, follow it. If not, check `CLAUDE.md` if it exists. Otherwise fall back to English defaults.
-6. **Language-aware comment syntax** — Pick the doc-comment style based on file extension.
-7. **Runtime-neutral output** — Claude and Codex may orchestrate agents differently, but the source comments and `docs/commentators/` files must have the same format.
+1. **Single docs-only layer** — Every annotation is a section in a mirrored markdown file under `docs/commentators/`. The source tree stays pristine so code diffs show only real code changes; the rationale stays discoverable via the mirrored path.
+2. **Source is read-only** — The skill never edits, creates, or comments source files. It only reads them to decide what to comment on. The only files it writes are under `docs/commentators/` plus the README/instruction pointers in §10.
+3. **Idempotent** — Idempotency is judged from the doc, not the source: if `docs/commentators/<path>.md` already has a `### {Role}` sub-section under a symbol's `## {signature}` heading, that role skips that symbol.
+4. **Sequential per file** — Within one file, exactly one role writes at a time, in order: planner → developer → security → qa. The shared resource is the single detail-doc `.md` file; sequencing prevents edit conflicts on it.
+5. **No auto-commit** — The skill only writes doc files. The user reviews the diff and commits manually.
+6. **Project conventions win** — If the project's root `AGENTS.md` defines a role-prefix convention, follow it for the `### {Role}` section headers and the team name. If not, check `CLAUDE.md` if it exists. Otherwise fall back to English defaults.
+7. **Runtime-neutral output** — Claude and Codex may orchestrate agents differently, but the `docs/commentators/` files must have the same format.
 
 ## Execution Order
 
@@ -60,7 +62,7 @@ When the skill is invoked, proceed in this exact order.
 
 ### 3) Decide role prefixes (in priority order)
 
-Read the project root's agent instruction files and decide which prefix set to use. `AGENTS.md` always has priority over `CLAUDE.md`.
+Read the project root's agent instruction files and decide which prefix set to use. `AGENTS.md` always has priority over `CLAUDE.md`. The prefix set is used for the `### {Role}` headers in the detail docs.
 
 1. **Project rule present in `AGENTS.md`** — If `AGENTS.md` defines `{...}`-style role prefixes, use those.
    - Match sections like "주석 규칙", "Comment rules", or any usage of `{Planner}` / `{기획}` / etc.
@@ -96,7 +98,7 @@ Use this when Claude team tools are available.
 Each role agent receives a briefing with:
 - Project root path
 - Their role and prefix (e.g. `planner` → `{Planner}`)
-- The comment-writing rules (see section below)
+- The commentary-writing rules (see section below)
 - An instruction to wait for task assignments from team-lead
 
 #### Codex worker mode
@@ -106,8 +108,8 @@ Use this when Codex multi-agent tools such as `multi_agent_v1.spawn_agent`, `wai
 - Use Codex subagents only when the user explicitly invokes `commentators` or otherwise asks for team/subagent/multi-agent/parallel annotation work. If the skill triggers from a generic "annotate from multiple perspectives" request without explicit delegation, use serial fallback in Codex.
 - Spawn Codex subagents with `agent_type="worker"` and omit model overrides unless the user requested a specific model.
 - Do not use `~/.claude/teams`, `TeamCreate`, `Agent`, or `SendMessage` in Codex.
-- Prefer file-owner workers over role-owner workers: each Codex worker owns a disjoint set of source files and their matching detail-doc files, then performs planner → developer → security → qa sequentially inside each owned file.
-- Do not assign four Codex workers to the same source file by role. That creates same-file merge conflicts and violates disjoint write ownership.
+- Prefer file-owner workers over role-owner workers: each Codex worker owns a disjoint set of detail-doc files (one per source file in its batch), then performs planner → developer → security → qa sequentially inside each owned detail-doc file.
+- Do not assign four Codex workers to the same detail-doc file by role. That creates same-file merge conflicts and violates disjoint write ownership.
 - Delay spawning Codex workers until the target file list is known in steps 5-7.
 
 If neither Claude team tools nor Codex multi-agent tools are available, run the same 4-role workflow serially in the main agent.
@@ -124,33 +126,17 @@ Based on `scope`:
 - **`changed`** — `git diff --name-only $(git merge-base HEAD origin/main 2>/dev/null || echo main)...HEAD` plus modified/new files from `git status --porcelain`. Apply the same include/exclude rules.
 - **`<path>`** — If the argument is a file, use it. If a directory, recurse and apply the rules above.
 
+These source files are read to decide what to comment on; they are never edited.
+
 If the final file count exceeds **30**, ask the user to confirm before continuing.
 
-### 6) Map extensions to comment styles
+### 6) Build the task list
 
-| Extension | Style | Format |
-|---|---|---|
-| `.kt` | KDoc | `/** ... */` block immediately above the declaration |
-| `.java` | Javadoc | `/** ... */` block |
-| `.ts .tsx .js .jsx` | JSDoc | `/** ... */` block |
-| `.py` | Docstring | `"""..."""` as the first statement of the function/class body |
-| `.go` | Line comments | `// ...` immediately above the declaration |
-| `.rs` | Doc comment | `/// ...` |
-| `.swift` | Doc comment | `/// ...` |
-| `.cpp .cc .c .h .hpp` | Doxygen | `/** ... */` |
-| `.cs` | XML doc | `/// <summary>...</summary>` |
-| `.rb` | YARD/RDoc | `# ...` |
-| `.php` | PHPDoc | `/** ... */` |
-| `.scala` | ScalaDoc | `/** ... */` |
-| `.m .mm` | Doc / line | `/// ...` |
-
-### 7) Build the task list
-
-- Create one task per file: `"[{filename}] 4-role annotation"`.
+- Create one task per file: `"[{filename}] 4-role commentary"`.
 - Claude team mode: leave `owner` unset at the task level — team-lead coordinates roles internally for each file.
-- Codex worker mode: partition target files into disjoint batches. Each worker owns the source files in its batch plus only their matching `docs/commentators/<path>.md` files.
+- Codex worker mode: partition target files into disjoint batches. Each worker owns only the `docs/commentators/<path>.md` files matching the source files in its batch.
 
-### 8) Process files
+### 7) Process files
 
 For each file, compute the detail-doc path:
 `{git-root}/docs/commentators/{relative-source-path}.md`.
@@ -162,14 +148,14 @@ The `.md` is **appended** to the original filename (not replacing the extension)
 For each file, run the following in strict order:
 
 1. Send a message to **planner** via `SendMessage`. The briefing must include:
-   - The source file path.
+   - The source file path (read-only).
    - The detail-doc path.
-   - "For each symbol where planning intent is worth capturing: write **one short line** (≤ 100 chars) starting with `{Planner}` in the source's doc-comment style, AND append a detailed `### {Planner}` section under that symbol's heading in the detail-doc file. Skip symbols that already have a `{Planner}` line in source. Report when done."
+   - "For each symbol where planning intent is worth capturing: append a detailed `### {Planner}` section under that symbol's `## {signature}` heading in the detail-doc file. Create the heading if it doesn't exist. Skip symbols that already have a `### {Planner}` section. Do not edit the source file. Report when done."
 2. Wait for planner's completion report.
 3. Repeat for **developer**, then **security**, then **qa** — each with their own prefix.
 4. Once all four roles finish, mark the file's task `completed` and move on.
 
-Role agents use `Read` + `Edit` + `Write`. They edit the source file (existing) and read/edit/write the detail-doc file (creating it the first time). Team-lead does not validate content — only orchestrates the sequence.
+Role agents use `Read` (on the source, read-only) + `Read`/`Edit`/`Write` (on the detail-doc file, creating it the first time). Team-lead does not validate content — only orchestrates the sequence.
 
 #### Codex worker mode
 
@@ -179,61 +165,41 @@ Each worker prompt must include:
 
 - "You are not alone in this codebase. Do not revert edits made by others; adapt to already-present changes."
 - The project root path.
-- The worker's exact owned source file list.
-- The matching detail-doc path for each owned source file.
+- The worker's exact owned detail-doc file list (and the source file each one mirrors, read-only).
 - The resolved role prefix map.
-- The comment-writing rules (see section below).
-- "For each owned file, process roles in this exact order: planner, developer, security, qa. For each role, add only that role's in-source one-liner and matching detail-doc subsection. Skip any role already present for a symbol. Report counts per role and list every file path changed."
+- The commentary-writing rules (see section below).
+- "For each owned file, process roles in this exact order: planner, developer, security, qa. For each role, add only that role's `### {Role}` detail-doc sub-section. Skip any role already present for a symbol. Never edit source files. Report counts per role and list every detail-doc path changed."
 
-Codex workers must only edit their owned source files and matching detail-doc files. The main agent initializes `docs/commentators/README.md` and root instruction-file pointers, waits for workers to finish, reviews/integrates returned changes, and then writes the final report.
+Codex workers must only edit their owned detail-doc files. The main agent initializes `docs/commentators/README.md` and root instruction-file pointers, waits for workers to finish, reviews/integrates returned changes, and then writes the final report.
 
 #### Serial fallback
 
 If no usable team/subagent tools exist, the main agent processes each file itself. Within each file, run planner → developer → security → qa in strict order and follow the same write rules.
 
-### 9) Comment-writing rules (shared by all role agents/workers)
+### 8) Commentary-writing rules (shared by all role agents/workers)
 
-Every role agent, Codex worker, and serial fallback pass uses these rules. There are **two layers** to write per symbol: the in-source one-liner, and the detail-doc section.
+Every role agent, Codex worker, and serial fallback pass uses these rules. There is **one layer**: the detail-doc section. Source files are never touched.
 
-#### 9a) In-source one-liner
+#### 8a) Detail-doc section
 
-- **Placement** — Immediately above the declaration (function, class, property, significant block), using the language's doc-comment convention.
-- **Form** — Exactly **one sentence**, ≤ 100 characters, starting with the role's prefix. No multi-sentence explanations here — those go in the detail doc.
-  - Kotlin: `/** {Planner} QR fallback to manual entry keeps the booking flow unblocked. */`
-  - TypeScript: `/** {Security} Token kept in memory only; persisting expands breach radius. */`
-  - Python: `"""{QA} Empty list must return None, not raise."""`
-- **Hard length cap (≤ 100 chars)** — The one-liner is a hard cap, not a soft target. Count characters of the content after the prefix. If the rationale won't fit, **trim it ruthlessly** (drop examples, drop function names, drop hedging) — the full reasoning belongs in the `.md`, not the source. Do NOT split into two `*` lines under the same role to dodge the cap; that produces multi-line role entries which downstream tools (extractors, summarisers) read as a single role-line.
-- **Comment-closer ban (no `*/` inside C-style block comments)** — When you write inside a `/** ... */` (or `/* ... */`) doc block, the content must NOT contain the substring `*/`. A literal `*/` anywhere in the body — even quoted, even inside backticks, even as a reference to another piece of code (e.g. `/* eslint-disable ... */`) — closes the outer block prematurely and breaks compilation. If you need to mention such a marker, paraphrase it (e.g. write "ESLint sort-keys disable directive" instead of pasting the literal `/* eslint-disable sort-keys */`). This rule does not apply to languages whose doc-comments don't use `/* */` (e.g. Python `"""`, Ruby `#`, Go `//`).
-- **Multiple roles on the same symbol** — Combine into a single doc block, one line per role, in role order:
-  ```kotlin
-  /**
-   * {Planner} QR fallback to manual entry keeps the booking flow unblocked.
-   * {Developer} Sealed result type makes the fallback branch impossible to forget.
-   * {Security} Validate scanned payload length before parsing.
-   * {QA} Test with malformed and over-length QR payloads.
-   */
-  ```
+- **File path** — `{git-root}/docs/commentators/{relative-source-path}.md` (the `.md` is appended, see §7).
+- **First write to a detail file** — Create the file with the header template from §8b. Subsequent writes only edit existing sections or append new ones.
+- **One section per commented symbol**, identified by `## {symbol-signature}`. Do **not** put line numbers in the heading — the signature is the durable identifier and stays stable when code shifts up or down.
+- **One sub-section per role** under that symbol: `### {Planner}`, `### {Developer}`, `### {Security}`, `### {QA}`. A role writes only its own sub-section.
+- **Length** — A few sentences to a short paragraph per role. Cover the *why*, the trade-offs, the assumptions, the verification points.
 - **Perspective specificity** — Don't restate *what* the code does. Capture *why / how to verify* from the role's viewpoint:
   - planner: user scenarios, rationale for the feature's existence, priority justification
   - developer: architectural or pattern choices, technical trade-offs
   - security: threat model, security assumptions, latent vulnerabilities, mitigations
   - qa: test points, edge cases, regression risks
 - **Idempotency**:
-  - If the same role's prefix already appears in the doc block for this symbol, **skip** (both source and detail doc).
-  - If only other roles' prefixes are present, **append** the new role's line inside the existing doc block.
-- **Skip trivial symbols** — Getters/setters, overridden `toString`, plain DTO fields, etc. Don't force a comment onto every symbol.
-- **Never modify existing code** — Only add or extend comments. Do not touch logic, signatures, imports, or formatting.
-
-#### 9b) Detail-doc section
-
-- **File path** — `{git-root}/docs/commentators/{relative-source-path}.md` (the `.md` is appended, see §8).
-- **First write to a detail file** — Create the file with the header template from §9c. Subsequent writes only edit existing sections or append new ones.
-- **One section per annotated symbol**, identified by `## {symbol-signature} (line {N})`. Use the symbol's declaration line at write time; if the line later shifts, that's fine — the heading is the durable identifier.
-- **One sub-section per role** under that symbol: `### {Planner}`, `### {Developer}`, `### {Security}`, `### {QA}`. A role writes only its own sub-section.
-- **Length** — A few sentences to a short paragraph per role. Cover the *why*, the trade-offs, the assumptions — anything that didn't fit in the one-liner.
+  - If the same role's `### {Role}` section already exists for this symbol, **skip**.
+  - If only other roles' sections are present under the `## {signature}` heading, **append** the new role's section there.
+- **Skip trivial symbols** — Getters/setters, overridden `toString`, plain DTO fields, etc. Don't force commentary onto every symbol.
 - **Role agents must not delete or rewrite another role's sub-section.** They only add or edit their own.
+- **Never modify source.** If a role notices a bug while reading, it records the concern in its detail-doc section; it does not edit the code.
 
-#### 9c) Detail-doc file template
+#### 8b) Detail-doc file template
 
 When a role agent, Codex worker, or serial fallback pass first creates `docs/commentators/{relative-source-path}.md`, it uses this skeleton (filling in the source path):
 
@@ -242,15 +208,15 @@ When a role agent, Codex worker, or serial fallback pass first creates `docs/com
 
 Source: `{relative-source-path}`
 
-> Multi-role annotations from the `commentators` skill. Each `##` heading is a symbol; each `###` heading under it is one role's detailed perspective. The matching one-liner in the source file is a pointer to the section here.
+> Multi-role commentary from the `commentators` skill. Each `##` heading is a symbol; each `###` heading under it is one role's detailed perspective. Source files are not annotated — this doc is the only commentary track.
 
 ---
 ```
 
-Then under that header, sections are appended as roles annotate symbols:
+Then under that header, sections are appended as roles comment symbols:
 
 ```markdown
-## class LoginViewModel (line 12)
+## class LoginViewModel
 
 ### {Planner}
 Booking flow can't tolerate a hard stop at QR scan: 12% of sessions fail in low-light, and the cost of dropping them is higher than the cost of a manual-entry path…
@@ -264,15 +230,15 @@ The viewmodel owns the fallback branch instead of the view because…
 ### {QA}
 …
 
-## fun authenticate(username: String, password: String) (line 28)
+## fun authenticate(username: String, password: String)
 
 ### {Planner}
 …
 ```
 
-Symbols are listed in source order. If a role is annotating an existing symbol (other roles already wrote their sub-sections), it appends its own `### {Role}` section under that `##` heading without reordering or rewriting the others.
+Symbols are listed in source order. If a role is commenting an existing symbol (other roles already wrote their sub-sections), it appends its own `### {Role}` section under that `##` heading without reordering or rewriting the others.
 
-### 10) Initialize the `docs/commentators/` tree (once per run, lazily)
+### 9) Initialize the `docs/commentators/` tree (once per run, lazily)
 
 The first time any role agent, Codex worker, or serial fallback pass writes a detail file in this run, ensure the project root has:
 
@@ -281,62 +247,55 @@ The first time any role agent, Codex worker, or serial fallback pass writes a de
   ```markdown
   # docs/commentators/
 
-  Detailed multi-role annotations for source files in this repository, written by the `commentators` skill.
+  Detailed multi-role commentary for source files in this repository, written by the `commentators` skill.
 
-  Layout mirrors the source tree. For a source file at `<path>`, its detailed annotations live at `docs/commentators/<path>.md`.
+  Layout mirrors the source tree. For a source file at `<path>`, its commentary lives at `docs/commentators/<path>.md`.
 
-  Each markdown file has one `##` section per annotated symbol and one `### {Role}` sub-section per role (Planner / Developer / Security / QA). The matching one-line comments inside the source file are pointers into here.
+  Each markdown file has one `##` section per commented symbol and one `### {Role}` sub-section per role (Planner / Developer / Security / QA). Source files are not annotated — this tree is the only commentary track.
 
-  When working on a source file with `{Planner}` / `{Developer}` / `{Security}` / `{QA}` one-liners, also read the corresponding file under `docs/commentators/` for the full rationale.
+  When working on a source file, also read the matching `docs/commentators/<path>.md` (if it exists) for the full per-symbol rationale.
   ```
 
 - A pointer in the project's root `AGENTS.md` (create the file if it doesn't exist; otherwise append a section if not already present). If a root `CLAUDE.md` already exists, append the same pointer there if it is not already present; do not create `CLAUDE.md`.
 
   ```markdown
-  ## Multi-role annotations
+  ## Multi-role commentary
 
-  Detailed per-symbol rationale lives under `docs/commentators/`, mirroring the source tree (e.g. `src/auth/Login.kt` → `docs/commentators/src/auth/Login.kt.md`). When you see `{Planner}` / `{Developer}` / `{Security}` / `{QA}` one-line comments in a source file, read the matching detail file for the full reasoning.
+  Detailed per-symbol rationale lives under `docs/commentators/`, mirroring the source tree (e.g. `src/auth/Login.kt` → `docs/commentators/src/auth/Login.kt.md`). Source files themselves are not annotated. When working on a source file, read the matching detail file for planner / developer / security / QA reasoning.
   ```
 
 Team-lead/main agent does both of these (not role agents or Codex workers) so the wording stays consistent.
 
-### 11) Optional build check
-
-Skip for small, targeted runs. For large `scope=all` runs over a language that has a fast check:
-
-- Kotlin/Java (Gradle): try `./gradlew compileDebugKotlin` or `./gradlew compileKotlin`.
-- TypeScript: try `tsc --noEmit` if a `tsconfig.json` is present.
-- If the command is missing or fails for unrelated reasons, ignore and note it in the final report.
-
-### 12) Final report
+### 10) Final report
 
 Team-lead/main agent reports to the user:
-- Number of source files processed
-- Approximate count of one-liners added per role (based on role-agent, worker, or serial pass reports)
+- Number of source files read
+- Approximate count of `### {Role}` sections added per role (based on role-agent, worker, or serial pass reports)
 - Number of detail-doc files created vs. updated under `docs/commentators/`
+- **Orphan sections** — any `## {signature}` heading in a detail doc whose symbol no longer exists in the matching source file (noticed for free while checking idempotency). List them so the user can prune; do not auto-delete.
 - Whether `docs/commentators/README.md`, the `AGENTS.md` pointer, and any existing `CLAUDE.md` pointer were created or already present
 - Summary of skipped files/symbols
-- Build-check result (if run)
-- **Next steps reminder** — "No commits were made. Review `git diff` and commit when you're ready. The `docs/commentators/` tree is also a new (or updated) set of files in your working tree."
+- **Next steps reminder** — "No commits were made, and no source files were modified. Review `git diff` (only `docs/commentators/` and the instruction pointers should appear) and commit when you're ready."
 
 ## Edge cases
 
 - **Not a git repo** — Only allow `scope=<path>`. Reject `changed`.
 - **Zero target files** — Report and exit. Do not create the `docs/commentators/` tree.
-- **No `AGENTS.md` or `CLAUDE.md`** — Use English default prefixes for in-source comments. Team-lead creates a minimal `AGENTS.md` containing only the "Multi-role annotations" pointer (§10) when the first detail file is written.
+- **No `AGENTS.md` or `CLAUDE.md`** — Use English default prefixes for the `### {Role}` headers. Team-lead creates a minimal `AGENTS.md` containing only the "Multi-role commentary" pointer (§9) when the first detail file is written.
 - **Both `AGENTS.md` and `CLAUDE.md` present** — `AGENTS.md` wins for role-prefix conventions. `CLAUDE.md` is only used as a fallback when `AGENTS.md` has no matching rule.
 - **Only unsupported extensions present** — Report "no supported files" and exit.
-- **Agent edit fails** — Skip that role or worker-owned file and continue; note the failure in the report. If a role wrote the source one-liner but failed on the detail doc (or vice-versa), report the inconsistency so the user can re-run.
+- **Agent write fails** — Skip that role or worker-owned file and continue; note the failure in the report.
 - **Detail file path collides with an existing non-doc file** — If `docs/commentators/<path>.md` already exists but is not a commentators-format file (no `Source:` header), abort that file and report; do not overwrite.
 - **Existing Claude team has a different prefix convention than this run** — Either spawn a new team with a hash suffix on the team name, or ask the user whether to reuse the existing team.
 
 ## Guardrails
 
-- **Role agents and Codex workers use Read + Edit + Write only for the two layers** — the source file (Edit only; never create source files) and the matching detail-doc file under `docs/commentators/` (Read/Edit/Write). They must not run `Bash`, git commands, builds, or touch any file outside those two paths.
+- **Source files are strictly read-only** — Role agents and Codex workers `Read` source files but never `Edit`, `Write`, or create them. The only writable files are the matching detail-doc files under `docs/commentators/`.
+- **Role agents and Codex workers must not run `Bash`, git commands, or builds** — they only read source and read/edit/write their owned detail-doc files.
 - **Team-lead/main agent alone manages `docs/commentators/README.md`, the root `AGENTS.md` pointer, and any existing root `CLAUDE.md` pointer** — role agents and Codex workers do not write to these.
 - **Claude only: always pass `team_name` when spawning role agents** — so the caller (team-lead) remains the team lead.
-- **Codex only: keep worker write sets disjoint** — never assign separate workers to edit the same source file or detail-doc file.
-- **No commits, pushes, or PRs** — This skill's scope ends at file edits.
+- **Codex only: keep worker write sets disjoint** — never assign separate workers to edit the same detail-doc file.
+- **No commits, pushes, or PRs** — This skill's scope ends at doc-file writes.
 - **Skip sensitive files** — Extension filters already exclude most secrets, but explicitly skip any file whose path contains `secret` or `credential`. Their detail-doc paths under `docs/commentators/` must also not be created.
 
 ## Termination
